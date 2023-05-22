@@ -48,7 +48,7 @@ class Agent:
         Compute the optimal policy for the agent's MDP.
     """
 
-    def __init__(self, gw: Gridworld, a1: int = 0):
+    def __init__(self, gw: Gridworld):
         gw.transition_probability = np.transpose(gw.transition_probability, (1, 0, 2))
         self.gw = gw
         self.optimal_policy, v = Agent.find_policy(
@@ -103,21 +103,19 @@ class Agent:
             self.R <= R_max,
             self.R >= -R_max,
         ]
-        tmp = []
-        for s in range(gw.n_states):
-            for a in range(gw.n_actions):
+        i = 0
+        tmp = np.empty(((gw.n_actions-1)*gw.n_states, gw.n_states))
+        for a in range(gw.n_actions):
+            tmp2 = np.zeros((gw.n_states, gw.n_states))
+            for s in range(gw.n_states):
                 if a != self.optimal_policy[s]:
-                    tmp.append(action_value(a, s))
-                    self.constraints.append(
-                        action_value(a, s) @ self.R >= self.t[s]
-                    )
-                    self.constraints.append(
-                        action_value(a, s) @ self.R >= 0
-                    )
-        # tmp = np.array(tmp)
-        # print(tmp.shape, self.R.shape)
-        # self.constraints.append(tmp @ self.R >= self.t)
-        # self.constraints.append(tmp @ self.R >= 0)
+                    tmp[i] = action_value(a, s)
+                    tmp2[s] = tmp[i]
+                    i += 1
+        self.constraints.append(tmp @ self.R >= 0)
+        self.constraints.append(tmp[:gw.n_states] @ self.R >= self.t)
+        self.constraints.append(tmp[gw.n_states:2*gw.n_states] @ self.R >= self.t)
+        self.constraints.append(tmp[2*gw.n_states:] @ self.R >= self.t)
 
         # n = gw.n_states
         # self.x = cp.Variable((3*n, 1)) # R, t, u
@@ -242,14 +240,6 @@ class Agent:
         policy = np.argmax(
             transition_probabilities @ (reward + discount * values), axis=0
         )
-        # policy = np.zeros(n_states, dtype=int)
-        # for state in range(n_states):
-        #     tmp = np.zeros(n_actions)
-        #     for a in range(n_actions):
-        #         for new_state in range(n_states):
-        #             tmp[a] += transition_probabilities[a, state, new_state] * (reward[new_state] + discount * values[new_state])
-        #     policy[state] = np.argmax(tmp)
-
         return policy, values
 
     def run_irl(self, lambda_val: float) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -291,8 +281,6 @@ class Agent:
             R,
             self.gw.discount,
         )
-
-        # irl_policy, values = Agent.find_policy(self.gw.n_states, self.gw.n_actions, self.gw.transition_probability, self.R.value[:,0], self.gw.discount)
         acc = accuracy(self.optimal_policy, irl_policy)
 
         self.irl_reward_function = R
