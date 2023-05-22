@@ -98,23 +98,10 @@ class Gridworld(object):
 
         return abs(i[0] - k[0]) + abs(i[1] - k[1]) <= 1
 
-    def on_corner(self,i):
-        corner_points = [0,9,90,99]
-        return i in corner_points
-
-    def on_edge(self,i):
-        edge_points = [1,2,3,4,5,6,7,8,
-                       10,19,20,29,30,39,40,49,50,59,60,69,70,79,80,89,
-                       91,92,93,94,95,96,97,98]
-        return i in edge_points
-
     def moving_off_grid(self,xi,xj,yi,yj,k):
-        if k < 0 or k > 99 or \
+        return k < 0 or k > 99 or \
             (xi + xj < 0 or xi + xj > 9) or \
-            (yi + yj < 0 or yi + yj > 9):
-          return True
-        
-        return False
+            (yi + yj < 0 or yi + yj > 9)
 
     def _transition_probability(self, i, j, k):
         """
@@ -126,6 +113,11 @@ class Gridworld(object):
         k: State int.
         -> p(s_k | s_i, a_j)
         """
+        corner_points = {0, 9, 90, 99}
+        edge_points = {1,2,3,4,5,6,7,8,
+                        10,19,20,29,30,39,40,49,50,59,60,69,70,79,80,89,
+                        91,92,93,94,95,96,97,98
+                    }
 
         xi, yi = self.int_to_point(i)
         xj, yj = self.actions[j]
@@ -143,24 +135,18 @@ class Gridworld(object):
             return self.wind / 4
         
         # Same point, corner?
-        if self.on_corner(i):
-            # intend to move off grid?
+        if i in corner_points:
             if self.moving_off_grid(xi,xj,yi,yj,k):
                 return 1 - self.wind * 1/2
-            else:
-                # blow off the grid by wind.
+            else: # blow off the grid by wind.
                 return self.wind * 1/2
+        elif i in edge_points:
+            if self.moving_off_grid(xi,xj,yi,yj,k):
+                return 1 - self.wind * 3/4
+            else: # blow off the grid by wind.
+                return self.wind * 1/4
         else:
-            # Not a corner. Is it an edge?
-            if not self.on_edge(i):
-                return 0
-            else:#it is an edge
-                # intend to move off grid?
-                if self.moving_off_grid(xi,xj,yi,yj,k):
-                    return 1 - self.wind*(3/4)
-                else:
-                    # blow off the grid by wind.
-                    return self.wind / 4
+            return 0
 
     def reward(self, state_int):
         """
