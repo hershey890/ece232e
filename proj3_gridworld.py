@@ -1,15 +1,8 @@
-from typing import Tuple
 import numpy as np
-from numpy.linalg import inv
-import numpy.random as rn
-import matplotlib.pyplot as plt
-import pickle
-import cvxpy as cp
-from tqdm import tqdm
 
 
 ## Define the gridworld MDP class
-class Gridworld(object):
+class Gridworld:
     """
     Gridworld MDP.
     """

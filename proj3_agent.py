@@ -65,28 +65,8 @@ class Agent:
         self.action_matrix = self.optimal_policy.reshape(
             (gw.grid_size, gw.grid_size)
         ).T.astype(int)
-
-        '''
-        # setup Inverse reinforcement learning cvxpy code
-        # a1 = mode(self.optimal_policy)
-        # R_max = np.abs(gw.reward_array).max()
-        # P_a1 = gw.transition_probability[a1]
-        # self.R = cp.Variable((gw.n_states, 1))
-        # self.t = cp.Variable((gw.n_states, 1))
-        # self.u = cp.Variable((gw.n_states, 1), nonneg=True)
-        # self.constraints = [
-        #     self.R <= self.u,
-        #     self.R >= -self.u,
-        #     self.R <= R_max,
-        #     self.R >= -R_max,
-        # ]
-        # for a in range(gw.n_actions):
-        #     if a != a1:
-        #         P_a = gw.transition_probability[a]
-        #         self.constraints.append((P_a1 - P_a) @ inv(np.eye(gw.n_states) - gw.discount * P_a1) @ self.R >= 0)
-        #         self.constraints.append((P_a1 - P_a) @ inv(np.eye(gw.n_states) - gw.discount * P_a1) @ self.R >= self.t)
-        '''
-        # setup Inverse reinforcement learning cvxpy code
+        
+        # Setup IRL problem, the problem is run in run_irl
         def action_value(a, s):
             a1 = self.optimal_policy[s]
             a = gw.transition_probability[a1, s] - gw.transition_probability[a, s]
@@ -94,101 +74,40 @@ class Agent:
             return a @ b
 
         R_max = np.abs(gw.reward_array).max()
-        self.R = cp.Variable((gw.n_states, 1))
-        self.t = cp.Variable((gw.n_states, 1))
-        self.u = cp.Variable((gw.n_states, 1), nonneg=True)
-        self.constraints = [
-            self.R <= self.u,
-            self.R >= -self.u,
-            self.R <= R_max,
-            self.R >= -R_max,
-        ]
+        self.x = cp.Variable((3 * gw.n_states, 1))  # R, t, u
+        n_s = gw.n_states
+        n_a = gw.n_actions
+        I = np.eye(n_s)
+        Z = np.zeros((n_s, n_s))
+
+        D1 = np.block([
+            [ I, Z, -I],
+            [-I, Z, -I],
+            [ I, Z,  Z],
+            [-I, Z,  Z],
+        ])
+        b1 = np.zeros((4*n_s, 1))
+        b1[2*n_s:] = R_max
+
+        reward_factor = np.empty(((n_a-1)*n_s, n_s))
         i = 0
-        tmp = np.empty(((gw.n_actions-1)*gw.n_states, gw.n_states))
-        for a in range(gw.n_actions):
-            tmp2 = np.zeros((gw.n_states, gw.n_states))
-            for s in range(gw.n_states):
+        for a in range(n_a):
+            for s in range(n_s):
                 if a != self.optimal_policy[s]:
-                    tmp[i] = action_value(a, s)
-                    tmp2[s] = tmp[i]
+                    reward_factor[i] = action_value(a, s)
                     i += 1
-        self.constraints.append(tmp @ self.R >= 0)
-        self.constraints.append(tmp[:gw.n_states] @ self.R >= self.t)
-        self.constraints.append(tmp[gw.n_states:2*gw.n_states] @ self.R >= self.t)
-        self.constraints.append(tmp[2*gw.n_states:] @ self.R >= self.t)
+        D2 = np.block([
+            [-reward_factor, np.zeros(((n_a-1)*n_s, 2*n_s))],
+            [-reward_factor[:n_s], I, Z],
+            [-reward_factor[n_s:2*n_s], I, Z],
+            [-reward_factor[2*n_s:], I, Z],
+        ])
+        b2 = np.zeros((((n_a-1) + 3)*n_s, 1))
 
-        # n = gw.n_states
-        # self.x = cp.Variable((3*n, 1)) # R, t, u
-        # P = gw.transition_probability
-        # D = np.zeros((10*n, 3*n))
-        # D[:n, :n]       =  np.eye(n)
-        # D[:n, 2*n:]     = -np.eye(n)
-        # D[n:2*n, :n]    = -np.eye(n)
-        # D[n:2*n, 2*n:]  =  np.eye(n)
-        # D[2*n:3*n, :n]  =  np.eye(n)
-        # D[3*n:4*n, :n]  = -np.eye(n)
-        # i = 0
-        # for a in range(gw.n_actions):
-        #     if a != a1:
-        #         D[4*n+i*n:4*n+(i+1)*n, :n] = -(P[a1] - P[a]) @ inv(np.eye(n) - gw.discount * P[a1])
-        #         i += 1
-        # i = 0
-        # for a in range(gw.n_actions):
-        #     if a != a1:
-        #         D[7*n+i*n:7*n+(i+1)*n, :n] = -(P[a1] - P[a]) @ inv(np.eye(n) - gw.discount * P[a1])
-        #         D[7*n+i*n:7*n+(i+1)*n, n:2*n] = np.eye(n)
-        #         i += 1
-        # b = np.zeros((10*n, 1))
-        # b[2*n:4*n] = R_max
-        # self.constraints = [D @ self.x <= b]
-        # self.D = D
-        # self.b = b
+        self.D = np.vstack((D1, D2))
+        self.b = np.vstack((b1, b2))
 
-    def new_irl(self, lambda_val: float = 0):
-        # x is of dims 3*n, 1, holds R, t, u
-        R_max = np.abs(self.gw.reward_array).max()
-        n = self.gw.n_states
-        P = self.gw.transition_probability
-
-        # Calculate D
-        a1 = 0
-        D = np.zeros((10 * n, 3 * n))
-        tmp = inv(np.eye(n) - self.gw.discount * P[a1])
-        # Constraint 1
-        D[:n, :n] = -(P[a1] - P[1]) @ tmp
-        D[:n, n : 2 * n] = np.eye(n)
-        D[n : 2 * n, :n] = -(P[a1] - P[2]) @ tmp
-        D[n : 2 * n, n : 2 * n] = np.eye(n)
-        D[2 * n : 3 * n, :n] = -(P[a1] - P[3]) @ tmp
-        D[2 * n : 3 * n, n : 2 * n] = np.eye(n)
-
-        # Constraint 2
-        D[3 * n : 4 * n, :n] = -(P[a1] - P[1]) @ tmp
-        D[4 * n : 5 * n, :n] = -(P[a1] - P[2]) @ tmp
-        D[5 * n : 6 * n, :n] = -(P[a1] - P[3]) @ tmp
-
-        # Constraint 3
-        D[6 * n : 7 * n, :n] = np.eye(n)
-        D[6 * n : 7 * n, 2 * n :] = -np.eye(n)
-        D[7 * n : 8 * n, :n] = -np.eye(n)
-        D[7 * n : 8 * n, 2 * n :] = -np.eye(n)
-
-        # Constraint 4
-        D[8 * n : 9 * n, :n] = np.eye(n)
-        D[9 * n :, :n] = -np.eye(n)
-
-        # Calculate b
-        b = np.zeros((10 * n))
-        b[8 * n :] = R_max
-
-        # Calculate c
-        c = np.zeros((3 * n))
-        c[n:] = -1
-        c[2 * n :] = lambda_val
-
-        # solve linear program
-        sol = solvers.lp(matrix(c), matrix(A), matrix(b))
-        R = np.array(sol["x"][:n])
+        self.constraints = [self.D @ self.x <= self.b]
 
     ## Implementing the function for computing the optimal policy.
     ## The function takes as input the MDP and outputs a
@@ -242,7 +161,7 @@ class Agent:
         )
         return policy, values
 
-    def run_irl(self, lambda_val: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    def run_irl(self, l1: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Returns policy found by inverse reinforcement learning and its accuracy when compared to the optimal policy
 
         Returns
@@ -254,25 +173,20 @@ class Agent:
         acc: float
             Accuracy of the policy found by IRL
         """
+        n_s = self.gw.n_states
+        c = np.zeros((3*n_s))
+        c[n_s:2*n_s] = 1
+        c[2*n_s:] = -l1
         cp.Problem(
-            cp.Maximize(cp.sum(self.t) - lambda_val * cp.sum(self.u)), self.constraints
+            cp.Maximize(c @ self.x), self.constraints
         ).solve()
-        if self.R.value is None:
+        if self.x.value is None:
             raise ValueError("The problem is infeasible")
-        R = self.R.value[:, 0]
+        R = self.x.value[:n_s, 0]
 
-        # Trying a new cvxpy method
-        # c = np.zeros((3*self.gw.n_states, 1))
-        # c[self.gw.n_states:2*self.gw.n_states] = 1
-        # c[2*self.gw.n_states:] = -lambda_val
-        # cp.Problem(cp.Maximize(c.T @ self.x), self.constraints).solve()
-        # if self.x.value is None:
-        #     raise ValueError('The problem is infeasible')
-        # R = self.x.value[:self.gw.n_states, 0]
-
-        # # Trying a new scipy method
-        # res = linprog(-c[:,0], A_ub=self.D, b_ub=self.b)
-        # R = res.x[:self.gw.n_states]
+        # solve with cvxopt, doesn't do any better than cvxpy
+        # sol = solvers.lp(matrix(-c) ,matrix(self.D), matrix(self.b))
+        # R = np.array(sol['x'][:n_s]).flatten()
 
         irl_policy, values = Agent.find_policy(
             self.gw.n_states,
