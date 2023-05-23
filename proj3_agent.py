@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 from typing import Tuple
 from statistics import mode
 import numpy as np
@@ -48,15 +49,18 @@ class Agent:
         Compute the optimal policy for the agent's MDP.
     """
 
-    def __init__(self, gw: Gridworld):
-        gw.transition_probability = np.transpose(gw.transition_probability, (1, 0, 2))
+    def __init__(self, gw: Gridworld, threshold: float = 1e-2, policy_iteration: bool = False):
+        gw = deepcopy(gw)
         self.gw = gw
+        gw.transition_probability = np.transpose(gw.transition_probability, (1, 0, 2))
         self.optimal_policy, v = Agent.find_policy(
             gw.n_states,
             gw.n_actions,
             gw.transition_probability,
             gw.reward_array.T.flatten(),
             gw.discount,
+            threshold=threshold,
+            policy_iteration=policy_iteration
         )
         self.values = np.array(v)
         self.reward_matrix = gw.reward_array
@@ -69,9 +73,9 @@ class Agent:
         # Setup IRL problem, the problem is run in run_irl
         def action_value(a, s):
             a1 = self.optimal_policy[s]
-            a = gw.transition_probability[a1, s] - gw.transition_probability[a, s]
-            b = inv(np.eye(gw.n_states) - gw.discount * gw.transition_probability[a1])
-            return a @ b
+            vec1 = gw.transition_probability[a1, s] - gw.transition_probability[a, s]
+            vec2 = inv(np.eye(gw.n_states) - gw.discount * gw.transition_probability[a1])
+            return vec1 @ vec2
 
         R_max = np.abs(gw.reward_array).max()
         self.x = cp.Variable((3 * gw.n_states, 1))  # R, t, u
@@ -89,24 +93,35 @@ class Agent:
         b1 = np.zeros((4*n_s, 1))
         b1[2*n_s:] = R_max
 
-        reward_factor = np.empty(((n_a-1)*n_s, n_s))
-        i = 0
-        for a in range(n_a):
-            for s in range(n_s):
+        D2 = []
+        for s in range(n_s):
+            for a in range(n_a):
                 if a != self.optimal_policy[s]:
-                    reward_factor[i] = action_value(a, s)
-                    i += 1
-        D2 = np.block([
-            [-reward_factor, np.zeros(((n_a-1)*n_s, 2*n_s))],
-            [-reward_factor[:n_s], I, Z],
-            [-reward_factor[n_s:2*n_s], I, Z],
-            [-reward_factor[2*n_s:], I, Z],
-        ])
-        b2 = np.zeros((((n_a-1) + 3)*n_s, 1))
+                    tmp = np.hstack([-action_value(a, s), np.zeros(n_s), np.zeros(n_s)])
+                    D2.append(tmp)
+                    tmp = np.hstack([-action_value(a, s), np.eye(n_s)[s], np.zeros(n_s)])
+                    D2.append(tmp)
+        D2 = np.array(D2)
+        b2 = np.zeros(((n_a-1)*2*n_s, 1))
+
+
+        # reward_factor = np.empty(((n_a-1)*n_s, n_s))
+        # i = 0
+        # for a in range(n_a):
+        #     for s in range(n_s):
+        #         if a != self.optimal_policy[s]:
+        #             reward_factor[i] = action_value(a, s)
+        #             i += 1
+        # D2 = np.block([
+        #     [-reward_factor, np.zeros(((n_a-1)*n_s, 2*n_s))],
+        #     [-reward_factor[:n_s], I, Z],
+        #     [-reward_factor[n_s:2*n_s], I, Z],
+        #     [-reward_factor[2*n_s:], I, Z],
+        # ])
+        # b2 = np.zeros((((n_a-1) + 3)*n_s, 1))
 
         self.D = np.vstack((D1, D2))
         self.b = np.vstack((b1, b2))
-
         self.constraints = [self.D @ self.x <= self.b]
 
     ## Implementing the function for computing the optimal policy.
@@ -124,6 +139,7 @@ class Agent:
         threshold=1e-2,
         values=None,
         stochastic=False,
+        policy_iteration=False,
     ):
         """
         Find the optimal value function.
@@ -159,9 +175,31 @@ class Agent:
         policy = np.argmax(
             transition_probabilities @ (reward + discount * values), axis=0
         )
+        
+        if policy_iteration:
+            policy_stable = False
+            while not policy_stable:
+                delta = 1 + threshold
+                while delta > threshold:
+                    delta = 0
+                    for state in range(n_states):
+                        v_old = values[state]
+                        values[state] = transition_probabilities[policy[state], state, :] @ (reward + discount * values)
+                        delta = max(delta, abs(v_old - values[state]))
+
+                # Computation:
+                old_policy = policy.copy()
+                for s in range(n_states):
+                    policy[s] = np.argmax(
+                        transition_probabilities[:, s, :] @ (reward + discount * values)
+                    )
+                    if np.all(policy == old_policy):
+                        policy_stable = True
+                        break
+
         return policy, values
 
-    def run_irl(self, l1: float) -> Tuple[np.ndarray, np.ndarray, float]:
+    def run_irl(self, l1: float, threshold: float = 1e-2, policy_iteration: bool = False) -> Tuple[np.ndarray, np.ndarray, float]:
         """Returns policy found by inverse reinforcement learning and its accuracy when compared to the optimal policy
 
         Returns
@@ -194,6 +232,8 @@ class Agent:
             self.gw.transition_probability,
             R,
             self.gw.discount,
+            threshold=threshold,
+            policy_iteration=policy_iteration
         )
         acc = accuracy(self.optimal_policy, irl_policy)
 
